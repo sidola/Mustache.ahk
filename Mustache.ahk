@@ -40,18 +40,29 @@ class Mustache {
      * 
      * @param {string} template
      *        A string-based template to compile.
+     * @param {object} partials
+     *        An object containing partial templates.
      *
      * @returns {object} A compiled template that can be used
      * by the Mustache.Render() method.
      */
-    Compile(template) {
+    Compile(template, partials := "") {
         startMarker := ["{", "{"]
         endMarker := ["}", "}"]
+
+        partialReaders := {}
+        if (partials.NewEnum().Next()) {
+            for partialTagName, partialTemplate in partials {
+                partialReaders[partialTagName] := new Mustache.Reader(partialTemplate)
+            }
+        }
 
         reader := new Mustache.Reader(template)
         compiler := new Mustache.Compiler()
 
-        return compiler.Compile(reader, startMarker, endMarker, "", false, true)
+        ; TODO: Move partials to after endMarker
+        return compiler.Compile(reader, startMarker, endMarker
+            , "", false, true, partialReaders)
     }
 
     /**
@@ -83,7 +94,7 @@ class Mustache {
         static linebreakChar := "`n"
 
         Compile(reader, startMarker, endMarker, tagName := ""
-            , iterable := false, whitespace := true) {
+            , iterable := false, whitespace := true, partialReaders := "") {
 
             tokens := []
             textBuffer := ""
@@ -169,6 +180,52 @@ class Mustache {
                             tokens.Push(Mustache.Token.VariableToken(command))
 
                         } else {
+
+                            ; Partial
+                            if (commandTagType == ">") {
+
+                                /*
+                                    So apparently partials are supposed to be
+                                    used during runtime (Parse), and not
+                                    compile-time, where we are right now.
+
+                                    Here's my plan: let's keep the interface like
+                                    it is. If the user passes in partials here
+                                    we'll expand them at compile time.
+
+                                    If we can't find a matching partial we'll
+                                    just store the tag and let the Parser deal
+                                    with injecting it at runtime.
+
+                                    Sounds like an improvement, right? ¯\_(ツ)_/¯
+                                */
+                                if (this.IsStandaloneTag(onlyWhitespace, reader)) {
+                                    ; Todo: Pass indent to recursive call...
+                                    indentSize := StrLen(textBuffer)
+                                    textBuffer := ""
+                                    
+                                    skipNextLinebreak := true
+                                }
+
+                                childTokens := ""
+                                if (partialReaders.HasKey(commandTagName)) {
+                                    partialTemplateReader := partialReaders[commandTagName]
+
+                                    /*
+                                        Before we begin this adventure we need to figure
+                                        out if we're standalone on this line.
+
+                                        If we are we need to indent every child token
+                                        with the same amount of whitespace.
+                                    */
+
+                                    childTokens := this.Compile(partialTemplateReader, startMarker, endMarker
+                                        , "", false, true, partialReaders)
+                                }
+
+                                textBuffer := this.WriteTextBuffer(tokens, textBuffer)
+                                tokens.Push(Mustache.Token.PartialToken(commandTagName, childTokens))
+                            }
 
                             ; Comment
                             if (commandTagType == "!") {
@@ -786,6 +843,15 @@ class Mustache {
 
         ElementToken() {
             return new this("E", ".")
+        }
+
+        PartialToken(variable, childTokens := "") {
+            t := new this("P", variable)
+
+            if (childTokens)
+                t.tokens := childTokens
+
+            return t
         }
 
         StringifyTokens(tokens, indentLevel := 0) {
